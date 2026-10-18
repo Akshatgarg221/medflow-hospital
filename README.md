@@ -91,3 +91,29 @@ The Vercel SQLite path under `/tmp` is only a temporary demonstration workaround
 2. Migrate to persistent PostgreSQL before relying on deployed writes; add migration and backup/restore procedures.
 3. Add appointment conflict detection and inventory purchase-request approvals.
 4. Add rate limiting, operational monitoring, dependency scanning, and a privacy/security review before any real-world use.
+
+## Assistant design and safety
+
+The operations assistant uses a deterministic intent router rather than claiming to be a clinician or making unsupported generative claims. Supported intents include inventory threshold checks, today's appointments, date/status-based overdue appointments, upcoming appointments, admission-record counts, patient-search guidance, and help. Responses include an explicit intent, a concise explanation, structured data where useful, and a caveat for operationally ambiguous results. Unknown requests return a clarification-oriented response instead of guessing. The assistant never diagnoses symptoms or recommends treatment.
+
+Assistant audit events store the intent label only; they do not store the user's free-text prompt or patient details. Query results are bounded to 100 records. This is a prototype and should use fictional data only until production-grade identity, authorization, persistent storage, monitoring, backups, and privacy controls are implemented.
+
+## Evaluation evidence
+
+- **Code quality:** intent classification is isolated in `classify_assistant_intent`; request handling and database access are separate concerns.
+- **Security:** authenticated endpoint, CSRF validation, bounded input length, parameterized SQL, and minimized assistant audit logging.
+- **Efficiency:** indexed lookup paths, bounded assistant query results, and patient-list pagination.
+- **Testing:** tests cover authentication, CSRF, invalid inputs, literal search wildcards, inventory invariants, structured assistant responses, unknown-intent behavior, and audit-log minimization. Run `pytest -q`.
+- **Accessibility:** semantic labels, table headers, and responsive page structure are retained in the interface.
+- **Problem alignment:** assistant intents map directly to hospital operations—appointments, supply stock, admissions, and patient-record navigation.
+
+## Deployment note
+
+The default SQLite database is suitable for local demonstration and tests. On Vercel, `/tmp` is ephemeral and must not be treated as durable storage; separate serverless instances may not share the same database. For reliable persistence, migrate the database operations to managed PostgreSQL before relying on hosted records. Do not store real patient information in this challenge demo.
+
+
+## Accuracy and ambiguity handling
+
+The operations assistant uses a deterministic, explainable intent router rather than claiming to be a clinical AI. It recognizes common paraphrases for inventory, overdue/upcoming/today appointments, admissions, patient-record navigation, and help. Generic appointment questions trigger a clarification prompt; mixed requests across multiple workflows are not partially answered. Unsupported clinical questions return no operational data. Results are queried from the database, bounded, and include caveats where the data cannot establish a real-world fact (for example, an old scheduled appointment is not proof of a no-show).
+
+Accuracy is validated with intent-level regression tests for paraphrases, ambiguous requests, unsupported clinical questions, structured results, and privacy-preserving audit logs. Run `pytest -q` before deployment. This is a rules-based prototype; it does not diagnose, triage, or recommend treatment.

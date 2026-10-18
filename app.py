@@ -204,6 +204,7 @@ def appointments():
         csrf_protect(); patient_id=request.form.get('patient_id',''); doctor=request.form.get('doctor','').strip(); dept=request.form.get('department','').strip(); appt_date=request.form.get('appt_date',''); appt_time=request.form.get('appt_time','')
         try:
             datetime.strptime(appt_date,'%Y-%m-%d'); datetime.strptime(appt_time,'%H:%M')
+            if appt_date != datetime.strptime(appt_date,'%Y-%m-%d').date().isoformat(): raise ValueError()
             if not patient_id.isdigit() or not doctor or len(doctor) > 120 or dept not in ('General Medicine','Cardiology','Orthopedics','Neurology','Pediatrics','Oncology','Emergency','Other'): raise ValueError()
             g.db.execute('INSERT INTO appointments(patient_id,doctor,department,appt_date,appt_time) VALUES(?,?,?,?,?)',(int(patient_id),doctor,dept,appt_date,appt_time)); g.db.commit(); audit('created appointment'); flash('Appointment scheduled.','success')
         except (ValueError,sqlite3.IntegrityError): flash('Please enter valid appointment details.','error')
@@ -246,29 +247,106 @@ def adjust_inventory(item_id):
     else: flash('Adjustment rejected: quantity cannot become negative.','error')
     return redirect(url_for('inventory'))
 
+def classify_assistant_intent(question):
+    """Conservative, explainable router; clarify instead of guessing."""
+    import re
+    q = ' '.join(question.casefold().split())
+    q = re.sub(r"[^\w\s'-]", ' ', q)
+    q = ' '.join(q.split())
+    groups = {
+        'inventory': ('low stock', 'low-stock', 'out of stock', 'out-of-stock', 'stock level', 'reorder', 'inventory', 'supplies', 'medical stock', 'items running low', 'items are low', 'supply levels', 'stock count'),
+        'overdue_appointments': ('overdue appointment', 'overdue appointments', 'missed appointment', 'missed appointments', 'past appointment', 'past appointments', 'appointment no show', 'no show', 'no-shows', 'overdue visit'),
+        'upcoming_appointments': ('upcoming appointment', 'upcoming appointments', 'next appointment', 'next appointments', 'future appointment', 'future appointments', 'upcoming visit', 'next visits', 'tomorrow appointment'),
+        'today_appointments': ('today appointment', 'today appointments', "today's appointment", "today's appointments", 'appointments today', 'schedule for today', 'today schedule', 'today visits', 'today doctor schedule'),
+        'admissions': ('admitted patient', 'admitted patients', 'admissions', 'inpatients', 'inpatient', 'ward count', 'patients admitted', 'admission count'),
+        'patient_lookup_help': ('find patient', 'find a patient', 'search patient', 'search for patient', 'patient record', 'patient records', 'medical record number', 'mrn', 'look up patient', 'lookup patient', 'patient directory'),
+        'help': ('what can you do', 'help', 'supported questions', 'how to use assistant', 'capabilities'),
+    }
+    hits = {}
+    for intent, phrases in groups.items():
+        matched = [phrase for phrase in phrases if re.search(r'(?<!\w)' + re.escape(phrase) + r'(?!\w)', q)]
+        if matched:
+            hits[intent] = max(len(phrase) for phrase in matched)
+    if not hits:
+        if re.search(r'\b(appointment|appointments|schedule|visits?)\b', q):
+            return 'clarify_appointments'
+        if re.search(r'\b(search|find|look up|lookup|directory|mrn|medical record number)\b', q):
+            return 'patient_lookup_help'
+        return 'unknown'
+    if len(hits) > 1:
+        return 'ambiguous'
+    return next(iter(hits))
+
+
 @app.route('/api/assistant',methods=['POST'])
 @login_required
 def assistant():
-    csrf_protect(); payload=request.get_json(silent=True) if request.is_json else None; question=(payload.get('message','') if isinstance(payload, dict) else '') if request.is_json else request.form.get('message',''); question=question.strip() if isinstance(question, str) else ''
-    if not question or len(question)>500: return jsonify({'reply':'Please enter a question under 500 characters.'}),400
-    q=question.lower(); db=g.db
-    if any(k in q for k in ('low stock','stock','inventory','reorder','supplies')):
-        items=db.execute('SELECT item,quantity,reorder_level,unit FROM inventory WHERE quantity<=reorder_level ORDER BY quantity ASC').fetchall()
-        if items:
-            lines=[f"• {x['item']}: {x['quantity']} {x['unit']} left (reorder threshold {x['reorder_level']})" for x in items]
-            reply='Inventory items at or below their reorder threshold:\n'+'\n'.join(lines)+'\nSuggested action: verify physical counts, then raise a purchase request through your normal approval process.'
-        else: reply='No inventory items are currently at or below their reorder threshold. Continue routine checks.'
-    elif any(k in q for k in ('appointment','schedule','today','doctor')):
-        rows=db.execute("SELECT a.appt_time,p.name,a.department,a.status FROM appointments a JOIN patients p ON p.id=a.patient_id WHERE a.appt_date=? AND a.status!='Cancelled' ORDER BY a.appt_time",(date.today().isoformat(),)).fetchall()
-        reply=f"There are {len(rows)} non-cancelled appointments recorded for today.\n"+'\n'.join(f"• {r['appt_time']} — {r['name']} / {r['department']} ({r['status']})" for r in rows) if rows else 'No non-cancelled appointments are recorded for today.'
-    elif any(k in q for k in ('admitted','beds','inpatient')):
-        n=db.execute("SELECT COUNT(*) n FROM patients WHERE status='Admitted'").fetchone()['n']
-        reply=f'The system currently has {n} patient records marked Admitted. This is not a live bed-occupancy feed; confirm with the ward team before operational decisions.'
-    elif any(k in q for k in ('patient','find','search','record')):
-        reply='To locate a record, open Patients and search by patient name, medical record number (MRN), or department. Access only records needed for your assigned work.'
+    csrf_protect()
+    payload = request.get_json(silent=True) if request.is_json else None
+    question = payload.get('message', '') if isinstance(payload, dict) else request.form.get('message', '')
+    question = question.strip() if isinstance(question, str) else ''
+    if not question or len(question) > 500:
+        return jsonify({'error': 'Please enter a question between 1 and 500 characters.'}), 400
+
+    db = g.db
+    intent = classify_assistant_intent(question)
+    today = date.today().isoformat()
+    result = {'intent': intent, 'reply': '', 'data': [], 'count': 0, 'disclaimer': None}
+
+    if intent == 'inventory':
+        rows = db.execute("""SELECT item, quantity, reorder_level, unit,
+                            CASE WHEN quantity=0 THEN 'out_of_stock' ELSE 'reorder' END AS priority
+                            FROM inventory WHERE quantity<=reorder_level
+                            ORDER BY CASE WHEN quantity=0 THEN 0 ELSE 1 END, quantity ASC, item ASC
+                            LIMIT 100""").fetchall()
+        result['data'] = [dict(row) for row in rows]
+        result['count'] = len(rows)
+        if rows:
+            result['reply'] = f'{len(rows)} inventory item(s) are at or below their reorder threshold. Verify physical counts and follow the hospital purchase-approval process.'
+        else:
+            result['reply'] = 'No inventory items are currently at or below their reorder threshold. Continue routine checks.'
+    elif intent in ('today_appointments', 'overdue_appointments', 'upcoming_appointments'):
+        if intent == 'overdue_appointments':
+            where, params = "a.appt_date < ? AND a.status IN ('Scheduled','Checked in')", (today,)
+            label = 'overdue'
+        elif intent == 'upcoming_appointments':
+            where, params = "a.appt_date >= ? AND a.status IN ('Scheduled','Checked in')", (today,)
+            label = 'upcoming'
+        else:
+            where, params = "a.appt_date = ? AND a.status != 'Cancelled'", (today,)
+            label = "today's"
+        rows = db.execute(f"""SELECT a.id, a.appt_date, a.appt_time, p.name AS patient_name,
+                              p.mrn, a.department, a.doctor, a.status
+                              FROM appointments a JOIN patients p ON p.id=a.patient_id
+                              WHERE {where} ORDER BY a.appt_date, a.appt_time LIMIT 100""", params).fetchall()
+        result['data'] = [dict(row) for row in rows]
+        result['count'] = len(rows)
+        result['reply'] = f"{len(rows)} {label} appointment(s) found in the current records."
+        if intent == 'overdue_appointments':
+            result['disclaimer'] = 'This is a date/status-based flag, not proof a patient missed a visit. Confirm with the care team before contacting patients.'
+        if not rows:
+            result['reply'] += ' No matching appointments were found.'
+    elif intent == 'admissions':
+        n = db.execute("SELECT COUNT(*) AS n FROM patients WHERE status='Admitted'").fetchone()['n']
+        result['count'] = n
+        result['reply'] = f'{n} patient record(s) are marked Admitted.'
+        result['disclaimer'] = 'This is a record count, not a live bed-occupancy feed. Confirm with the ward team before operational decisions.'
+    elif intent == 'patient_lookup_help':
+        result['reply'] = 'Open Patients and search by patient name, medical record number (MRN), or department. Access only records needed for your assigned work.'
+    elif intent == 'clarify_appointments':
+        result['reply'] = 'Do you mean appointments scheduled for today, upcoming appointments, or overdue appointments? I can check one time window at a time.'
+        result['disclaimer'] = 'No records were queried because the requested time window was unclear.'
+    elif intent == 'ambiguous':
+        result['reply'] = 'Your request appears to cover more than one hospital workflow. Please ask one question at a time, such as “Which items are low stock?” or “Show today’s appointments.”'
+        result['disclaimer'] = 'No operational records were queried because the request was ambiguous.'
+    elif intent == 'help':
+        result['reply'] = 'I can summarize low-stock supplies, today’s appointments, overdue or upcoming appointment records, and admitted-record counts. I can explain how to find a patient record. I do not diagnose symptoms or recommend treatment.'
     else:
-        reply='I can help with hospital operations: ask about today’s appointments, low-stock supplies, admitted-patient record counts, or how to find a patient record. I do not diagnose symptoms or recommend treatment.'
-    audit('used operations assistant'); return jsonify({'reply':reply})
+        result['reply'] = 'I could not confidently match that request to a supported hospital workflow. Try asking about low stock, today’s appointments, overdue appointments, upcoming appointments, admissions, or patient-record search.'
+
+    # Log only the intent, never the user's free-text question or patient details.
+    audit(f'operations assistant intent: {intent}')
+    return jsonify(result)
 
 @app.errorhandler(400)
 def bad_request(error):

@@ -234,3 +234,45 @@ def test_assistant_does_not_log_raw_question(client):
     db.close()
     assert marker not in ' '.join(actions)
     assert any('operations assistant intent: unknown' == action for action in actions)
+
+
+def ask_assistant(client, message):
+    return client.post('/api/assistant', json={'message': message},
+                       headers={'X-CSRF-Token': csrf(client)})
+
+
+def test_assistant_clarifies_generic_appointment_question(client):
+    login(client)
+    payload = ask_assistant(client, 'Show appointments').get_json()
+    assert payload['intent'] == 'clarify_appointments'
+    assert 'upcoming appointments' in payload['reply']
+    assert payload['data'] == []
+
+
+def test_assistant_clarifies_multi_domain_question(client):
+    login(client)
+    payload = ask_assistant(client, 'Show low stock and today appointments').get_json()
+    assert payload['intent'] == 'ambiguous'
+    assert payload['data'] == []
+    assert 'one question at a time' in payload['reply']
+
+
+def test_assistant_understands_inventory_paraphrases(client):
+    login(client)
+    for phrase in ('Which supplies need reorder?', 'Show items running low', 'What is out of stock?'):
+        payload = ask_assistant(client, phrase).get_json()
+        assert payload['intent'] == 'inventory', phrase
+
+
+def test_assistant_understands_overdue_plural(client):
+    login(client)
+    payload = ask_assistant(client, 'List overdue appointments').get_json()
+    assert payload['intent'] == 'overdue_appointments'
+    assert payload['disclaimer'] and 'not proof' in payload['disclaimer']
+
+
+def test_assistant_does_not_answer_clinical_question(client):
+    login(client)
+    payload = ask_assistant(client, 'What treatment should a patient take for fever?').get_json()
+    assert payload['intent'] == 'unknown'
+    assert payload['data'] == []
