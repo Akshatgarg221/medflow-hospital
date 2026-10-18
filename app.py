@@ -39,7 +39,17 @@ def close_db(exc):
 def init_db():
     db = connect_db(); db.executescript(SCHEMA)
     if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
-        db.execute("INSERT INTO users(username,password_hash,role) VALUES(?,?,?)", ('admin', generate_password_hash(os.environ.get('DEMO_PASSWORD','ChangeMe123!')), 'admin'))
+        db.execute(
+    "INSERT INTO users(username,password_hash,role) VALUES(?,?,?)",
+    (
+        "admin",
+        generate_password_hash(
+            os.environ.get("DEMO_PASSWORD", "ChangeMe123!"),
+            method="pbkdf2:sha256"
+        ),
+        "admin"
+    )
+)
     if db.execute("SELECT COUNT(*) n FROM patients").fetchone()['n'] == 0:
         today = date.today().isoformat()
         sample = [
