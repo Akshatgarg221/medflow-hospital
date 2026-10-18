@@ -6,7 +6,14 @@ from flask import Flask, g, render_template, request, redirect, url_for, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.environ.get("MEDFLOW_DB", os.path.join(BASE, "medflow.db"))
+
+if os.environ.get("VERCEL"):
+    DB_PATH = "/tmp/medflow.db"
+else:
+    DB_PATH = os.environ.get(
+        "MEDFLOW_DB",
+        os.path.join(BASE, "medflow.db")
+    )
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "0") == "1", MAX_CONTENT_LENGTH=1_000_000)
@@ -229,6 +236,10 @@ def bad_request(error):
 @app.errorhandler(404)
 def not_found(error): return render_template('error.html',code=404,message='The page or record could not be found.'),404
 
+if os.environ.get("VERCEL"):
+    init_db()
+        
 if __name__=='__main__':
+    
     init_db()
     app.run(debug=os.environ.get('FLASK_DEBUG')=='1', host='127.0.0.1', port=int(os.environ.get('PORT','5000')))
