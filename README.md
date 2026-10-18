@@ -45,13 +45,25 @@ Demo login: `admin` / `ChangeMe123!`. Change this immediately before any sharing
 
 For a stable secret, set `SECRET_KEY` in your environment. When running behind HTTPS, set `COOKIE_SECURE=1`. Do not enable Flask debug mode in a shared or production environment.
 
+## Evaluation map (challenge rubric)
+
+| Criterion | Evidence in this repository | Validation approach |
+|---|---|---|
+| Code quality | Flask routes grouped by workflow, reusable authentication/CSRF/audit helpers, parameterized SQL, Jinja templates and static assets separated from Python | Python compilation and focused route tests |
+| Security | Werkzeug password hashing, login-required decorator, CSRF checks on mutations, same-origin redirect validation, HTTP-only/SameSite cookies, secure cookies on Vercel, response security headers, payload limits and input validation | Tests for CSRF, authentication, open redirects, error responses and invalid inputs |
+| Efficiency | Database indexes for patient lookup/status, appointment date/status, patient appointment history, stock alerts and audit time; patient results paginated at 50 per page; dashboard result sets are capped | Schema index test and bounded result-set review |
+| Testing | Automated Flask test client suite for positive and negative paths, validation, auth, CSRF, missing records, stock constraints and assistant responses | Run `pytest -q` before submission |
+| Accessibility | Semantic headings and tables, form labels, accessible names for controls, status announcements, responsive styling and reduced-motion support | Manual keyboard/zoom review recommended in addition to automated tests |
+| Problem statement alignment | Hospital operations persona, patient directory, appointment desk, supply stock thresholds, audit trail and deterministic database-grounded assistant | End-to-end workflow checks documented below |
+
 ## Tests
 
 ```bash
+pip install -r requirements.txt
 pytest -q
 ```
 
-Tests cover authentication gating, dashboard access, patient search, CSRF rejection, and assistant inventory answers.
+The suite covers authentication, login CSRF, redirect safety, patient search and creation, invalid input, missing records, inventory duplicate/negative-stock handling, appointment CSRF, malformed assistant JSON, security headers, and schema indexes. Run it in the same Python environment used for local development and include the actual result in the submission notes.
 
 ## Assumptions and limitations
 
@@ -69,9 +81,13 @@ Tests cover authentication gating, dashboard access, patient search, CSRF reject
 - Do not commit `medflow.db`, `.env`, credentials, patient data, or environment folders.
 - The source project is intentionally small; verify the repository remains under the challenge's 10 MB limit before submitting.
 
-## Suggested future improvements
+## Deployment note: Vercel and persistence
 
-1. Add least-privilege roles (reception, clinician, inventory manager) and stronger account provisioning.
-2. Add audit log viewer, pagination, export controls, and explicit data-retention behavior.
-3. Add appointment conflict detection and inventory purchase-request approval flow.
-4. Add deployment hardening, rate limiting, security headers, backups, and security/privacy testing.
+The Vercel SQLite path under `/tmp` is only a temporary demonstration workaround. Serverless instances may be recycled or isolated, so data is **not guaranteed to persist**. Do not store real patient information. For reliable multi-instance deployment, migrate the database layer to managed PostgreSQL, add connection management and migrations, and configure the provider's connection string as a secret environment variable. `SECRET_KEY` must be a stable secret value in Vercel (the key name is `SECRET_KEY`; the random generated string belongs in the Value field).
+
+## Remaining limitations / roadmap
+
+1. Replace the single seeded administrator with managed accounts and least-privilege roles (reception, clinician, inventory manager).
+2. Migrate to persistent PostgreSQL before relying on deployed writes; add migration and backup/restore procedures.
+3. Add appointment conflict detection and inventory purchase-request approvals.
+4. Add rate limiting, operational monitoring, dependency scanning, and a privacy/security review before any real-world use.
