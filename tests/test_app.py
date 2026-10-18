@@ -189,3 +189,48 @@ def test_security_headers_present_on_error(client):
     assert response.status_code == 404
     assert response.headers['X-Content-Type-Options'] == 'nosniff'
     assert response.headers['X-Frame-Options'] == 'DENY'
+
+
+def test_assistant_returns_structured_low_stock_results(client):
+    login(client)
+    response = client.post('/api/assistant', json={'message': 'Show low stock supplies'},
+                           headers={'X-CSRF-Token': csrf(client)})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['intent'] == 'inventory'
+    assert payload['count'] >= 1
+    assert any(item['item'] == 'N95 masks' for item in payload['data'])
+    assert all(item['priority'] in ('out_of_stock', 'reorder') for item in payload['data'])
+
+
+def test_assistant_overdue_intent_includes_caveat(client):
+    login(client)
+    response = client.post('/api/assistant', json={'message': 'Show overdue appointments'},
+                           headers={'X-CSRF-Token': csrf(client)})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['intent'] == 'overdue_appointments'
+    assert 'not proof' in payload['disclaimer']
+
+
+def test_assistant_unknown_intent_does_not_guess(client):
+    login(client)
+    response = client.post('/api/assistant', json={'message': 'What is the best treatment for chest pain?'},
+                           headers={'X-CSRF-Token': csrf(client)})
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload['intent'] == 'unknown'
+    assert 'could not confidently match' in payload['reply']
+    assert payload['data'] == []
+
+
+def test_assistant_does_not_log_raw_question(client):
+    login(client)
+    marker = 'CONFIDENTIAL-FREE-TEXT-DO-NOT-LOG'
+    client.post('/api/assistant', json={'message': marker}, headers={'X-CSRF-Token': csrf(client)})
+    from app import connect_db
+    db = connect_db()
+    actions = [row['action'] for row in db.execute('SELECT action FROM audit_log').fetchall()]
+    db.close()
+    assert marker not in ' '.join(actions)
+    assert any('operations assistant intent: unknown' == action for action in actions)
