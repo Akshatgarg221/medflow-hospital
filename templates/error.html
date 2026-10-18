@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block page_title %}{{ code }}{% endblock %}{% block content %}<section class="panel error-panel"><div class="error-code">{{ code }}</div><h2>Something went wrong</h2><p class="muted">{{ message }}</p><a class="btn primary" href="{{ url_for('dashboard') if session.get('username') else url_for('login') }}">Return to workspace</a></section>{% endblock %}
